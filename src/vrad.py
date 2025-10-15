@@ -24,6 +24,7 @@ from hammeraddons.plugin import PluginFinder, Source as PluginSource
 
 from BEE2_config import ConfigFile
 from postcomp import music, screenshot
+from postcomp.lowercase_fs import ForceLowercaseRawFileSystem
 import utils
 
 
@@ -213,6 +214,9 @@ async def main(argv: list[str]) -> None:
     # Special case - move the BEE2 filesystem FIRST, so we always pack files found there.
     for child_sys in fsys.systems[:]:
         if 'bee2' in child_sys[0].path.casefold():
+            if isinstance(child_sys[0], RawFileSystem):
+                child_sys = (ForceLowercaseRawFileSystem(child_sys[0].path),) + child_sys[1:]
+
             fsys.systems.remove(child_sys)
             fsys.systems.insert(0, child_sys)
 
@@ -282,7 +286,7 @@ async def main(argv: list[str]) -> None:
     for child_sys, _ in fsys.systems:
         # Add 'bee2/' and 'bee2_dev/' only.
         if (
-            isinstance(child_sys, RawFileSystem) and
+            isinstance(child_sys, ForceLowercaseRawFileSystem) and
             'bee2' in os.path.basename(child_sys.path).casefold()
         ):
             pack_whitelist.add(child_sys)

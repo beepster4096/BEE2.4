@@ -167,8 +167,8 @@ async def step_copy_resources(exp: ExportData) -> None:
                 elif start_folder in ('bee2', 'music_samp'):
                     continue  # Skip app icons and music samples.
                 else:
-                    # Preserve original casing.
-                    dest = Path(exp.game.abs_path('bee2'), start_folder, pathstr)
+                    # force lowercase
+                    dest = Path(exp.game.abs_path('bee2'), start_folder, pathstr.lower())
 
                 # Already copied from another package.
                 if dest in already_copied:
