@@ -20,6 +20,6 @@ pygtrie >= 2.4.0
 babel >= 2.15.0
 # Web server
 hypercorn >= 0.14.3
-quart >= 0.19.4
+quart == 0.22.0
 quart-trio >= 0.11.1
 psutil >= 5.9.8
