@@ -5,10 +5,12 @@ import os
 import pickle
 import pickletools
 import shutil
+from functools import partial
 
 from srctools import AtomicWriter, Keyvalues, logger
 from srctools.dmx import Element
 from srctools.filesys import File
+from srctools.vpk import VPK
 import trio
 
 from app import DEV_MODE
@@ -146,37 +148,65 @@ async def step_copy_resources(exp: ExportData) -> None:
         await trio.to_thread.run_sync(copy_file_thread, file, dest)
         await STAGE_RESOURCES.step(dest)
 
+    def copy_file_vpk_thread(file: File, rel_path: str, vpk_file: VPK) -> None:
+        with file.open_bin() as fsrc:
+            vpk_file.add_file(rel_path, fsrc.read())
+
+    async def copy_file_vpk(file: File, rel_path: str, vpk_file: VPK) -> None:
+        await trio.to_thread.run_sync(copy_file_vpk_thread, file, rel_path, vpk_file)
+        await STAGE_RESOURCES.step(Path(vpk_file.path, rel_path))
+
+    async def clear_files(filename: trio.Path) -> None:
+        await filename.parent.mkdir(exist_ok=True)
+        file: trio.Path
+        for file in await filename.parent.iterdir():
+            await file.unlink()
+
     count = 0
 
+    vpk_filename = trio.Path(exp.game.abs_path('bee2')) / "pak01_dir.vpk"
+
     async with trio.open_nursery() as nursery:
-        for pack in exp.packset.packages.values():
-            if not pack.enabled:
-                continue
-            for file in pack.fsys.walk_folder('resources'):
-                try:
-                    res, start_folder, pathstr = file.path.split('/', 2)
-                except ValueError:
-                    exp.warn_auth(pack.id, TRANS_ROOT_RESOURCE.format(file=file.path))
+        await clear_files(vpk_filename)
+
+        vpk_file = await trio.to_thread.run_sync(partial(VPK, str(vpk_filename), mode='w'))
+
+        with vpk_file:
+            for pack in exp.packset.packages.values():
+                if not pack.enabled:
                     continue
-                assert res.casefold() == 'resources', file.path
-
-                start_folder = start_folder.casefold()
-
-                if start_folder == 'instances':
-                    dest = Path(exp.game.abs_path(INST_PATH), pathstr.casefold())
-                elif start_folder in ('bee2', 'music_samp'):
-                    continue  # Skip app icons and music samples.
-                else:
-                    # Preserve original casing.
-                    dest = Path(exp.game.abs_path('bee2'), start_folder, pathstr)
-
-                # Already copied from another package.
-                if dest in already_copied:
-                    continue
-                already_copied.add(dest)
-                nursery.start_soon(copy_file, file, dest)
-                count += 1
-            await STAGE_RESOURCES.set_length(count)
+                for file in pack.fsys.walk_folder('resources'):
+                    try:
+                        res, start_folder, pathstr = file.path.split('/', 2)
+                    except ValueError:
+                        exp.warn_auth(pack.id, TRANS_ROOT_RESOURCE.format(file=file.path))
+                        continue
+                    assert res.casefold() == 'resources', file.path
+    
+                    start_folder = start_folder.casefold()
+    
+                    if start_folder == 'instances':
+                        dest = Path(exp.game.abs_path(INST_PATH), pathstr.casefold())
+                        do_vpk = False
+                    elif start_folder in ('bee2', 'music_samp'):
+                        continue  # Skip app icons and music samples.
+                    else:
+                        # Preserve original casing.
+                        dest = Path(vpk_filename, start_folder, pathstr)
+                        do_vpk = True
+    
+                    # Already copied from another package.
+                    if dest in already_copied:
+                        continue
+                    already_copied.add(dest)
+    
+                    if do_vpk:
+                        nursery.start_soon(copy_file_vpk, file, pathstr, vpk_file)
+                    else:
+                        nursery.start_soon(copy_file, file, dest)
+                    
+                    count += 1
+                await STAGE_RESOURCES.set_length(count)
 
     LOGGER.info('Cache copied.')
 
