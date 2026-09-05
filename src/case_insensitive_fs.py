@@ -1,72 +1,105 @@
+from collections.abc import Iterator, Iterable
+from typing import Self, TextIO, BinaryIO
 import os
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from srctools import StringPath
-from srctools.filesys import RawFileSystem, RootEscapeError
+from srctools.filesys import File, FileSystem, RootEscapeError, CACHE_KEY_INVALID
 
-type CasefoldPath = tuple[str, ...]
+class CasefoldPath(tuple[str, ...]):
+    def __new__(cls, path: PurePath) -> Self:
+        if path == PurePath('.'):
+            iter = ()
+        else:
+            iter = map(str.casefold, path.parts)
+        return super().__new__(cls, iter)
 
-class AmbiguousPathError(ValueError):
-    base: Path
-    segment: str
-    match_count: int
-
-    def __init__(self, base: Path, segment: str, match_count: int) -> None:
-        self.base = base
-        self.segment = segment
-        self.match_count = match_count
-        super().__init__(base, segment, match_count)
+    def is_prefix_of(self, other: Self) -> bool:
+        return len(self) <= len(other) and self == other[:len(self)]
 
     def __str__(self) -> str:
-        return f'Path "{self.base}" contains {self.match_count} ambiguous casefolded matches for "{self.segment}"'
+        if len(self) == 0:
+            return "."
+        else:
+            return '/'.join(self)
 
-class CaseInsensitiveFs(RawFileSystem):
-    _path_cache: dict[CasefoldPath, Path]
+class AmbiguousPathError(ValueError):
+    path: CasefoldPath
+
+    def __init__(self, path: CasefoldPath) -> None:
+        self.path = path
+        super().__init__(path)
+
+    def __str__(self) -> str:
+        return f'Casefolded path "{self.path}" is ambiguous'
+
+class CaseInsensitiveFs(FileSystem[Path]):
+    # note: assumes fs structure does not change
+    _index: dict[CasefoldPath, Path]
 
     def __init__(self, path: StringPath) -> None:
-        self._path_cache = {}
-        super().__init__(path, constrain_path = True)
+        abs_path = Path(path).resolve()
+        self._index = {}
 
-    def _resolve_true_path_uncached(self, base: Path, segment: str) -> Path:
-        matches = [child.name for child in base.iterdir() if child.name.casefold() == segment]
+        for dirpath, dirnames, filenames in abs_path.walk():
+            reldir = dirpath.relative_to(abs_path)
+            for file in filenames:
+                true_path = dirpath / file
+                case_path = CasefoldPath(reldir / file)
+                if case_path in self._index:
+                    raise AmbiguousPathError(case_path)
+                else:
+                    self._index[case_path] = true_path
+        
+        super().__init__(str(abs_path))
 
-        match matches:
-            case []:
-                raise FileNotFoundError(base / segment)
-            case [name]:
-                return base / name
-            case [*_]:
-                raise AmbiguousPathError(base, segment, len(matches))
-
-    def _resolve_true_path(self, path: CasefoldPath) -> Path:
-        if len(path) == 0:
-            return Path(self.path)
-
-        try:
-            return self._path_cache[path]
-        except KeyError:
-            base = self._resolve_true_path(path[:-1])
-            true_path = self._resolve_true_path_uncached(base, path[-1])
-
-            self._path_cache[path] = true_path
-            return true_path
-
-    def _resolve_path(self, path: str) -> str:
-        abs_path = Path(os.path.abspath(os.path.join(self.path, path.casefold())))
+    def _resolve_path(self, path: str) -> CasefoldPath:
+        abs_path = Path(self.path, path).resolve()
 
         try:
-            rel_path = abs_path.relative_to(self.path)
+            return CasefoldPath(abs_path.relative_to(self.path))
         except ValueError:
             raise RootEscapeError(self.path, path) from None
 
-        case_path = tuple(rel_path.parts)
-        true_path = self._resolve_true_path(case_path)
-        return str(true_path)
-
-    def _file_exists(self, name: str) -> bool:
+    def _lookup(self, path: CasefoldPath) -> Path:
         try:
-            self._resolve_path(name)
-            return True
+            return self._index[path]
+        except KeyError:
+            raise FileNotFoundError(path) from None
+    
+    def walk_folder(self, folder: str = '') -> Iterator[File[Self]]:
+        case_folder = self._resolve_path(folder)
+
+        for case_path, true_path in self._index.items():
+            if case_folder.is_prefix_of(case_path):
+                yield File(self, str(case_path), true_path)
+
+    def open_str(self, name: str | File[Self], encoding: str = 'utf8') -> TextIO:
+        if isinstance(name, File):
+            path = self._get_data(name)
+        else:
+            path = self._lookup(self._resolve_path(name))
+
+        return path.open(encoding=encoding)
+
+    def open_bin(self, name: str | File[Self]) -> BinaryIO:
+        if isinstance(name, File):
+            path = self._get_data(name)
+        else:
+            path = self._lookup(self._resolve_path(name))
+
+        return path.open(mode='rb')
+
+    def _get_file(self, name: str) -> File[Self]:
+        case_path = self._resolve_path(name)
+        path = self._lookup(case_path)
+
+        return File(self, str(case_path), path)
+
+    def _get_cache_key(self, file: File[Self]) -> int:
+        """Our cache key is the last modification time."""
+        try:
+            return self._get_data(file).stat().st_mtime_ns
         except FileNotFoundError:
-            return False
+            return CACHE_KEY_INVALID
         
