@@ -26,6 +26,7 @@ from BEE2_config import ConfigFile
 from postcomp import music, screenshot
 import utils
 
+from case_insensitive_fs import CaseInsensitiveFs
 
 LOGGER = get_logger()
 
@@ -212,9 +213,10 @@ async def main(argv: list[str]) -> None:
 
     # Special case - move the BEE2 filesystem FIRST, so we always pack files found there.
     for child_sys in fsys.systems[:]:
-        if 'bee2' in child_sys[0].path.casefold():
+        if 'bee2' in child_sys[0].path.casefold() and isinstance(child_sys[0], RawFileSystem):
             fsys.systems.remove(child_sys)
-            fsys.systems.insert(0, child_sys)
+            new_fs = CaseInsensitiveFs(child_sys[0].path)
+            fsys.systems.insert(0, (new_fs, child_sys[1]))
 
     zip_data = BytesIO()
     zip_data.write(bsp_file.get_lump(BSP_LUMPS.PAKFILE))
@@ -282,7 +284,7 @@ async def main(argv: list[str]) -> None:
     for child_sys, _ in fsys.systems:
         # Add 'bee2/' and 'bee2_dev/' only.
         if (
-            isinstance(child_sys, RawFileSystem) and
+            isinstance(child_sys, CaseInsensitiveFs) and
             'bee2' in os.path.basename(child_sys.path).casefold()
         ):
             pack_whitelist.add(child_sys)
