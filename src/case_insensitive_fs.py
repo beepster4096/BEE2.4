@@ -1,10 +1,12 @@
 from collections.abc import Iterator, Iterable
 from typing import Self, TextIO, BinaryIO
-import os
 from pathlib import Path, PurePath
+import filecmp
 
-from srctools import StringPath
+from srctools import StringPath, logger
 from srctools.filesys import File, FileSystem, RootEscapeError, CACHE_KEY_INVALID
+
+LOGGER = logger.get_logger(__name__)
 
 class CasefoldPath(tuple[str, ...]):
     def __new__(cls, path: PurePath) -> Self:
@@ -47,7 +49,11 @@ class CaseInsensitiveFs(FileSystem[Path]):
                 true_path = dirpath / file
                 case_path = CasefoldPath(reldir / file)
                 if case_path in self._index:
-                    raise AmbiguousPathError(case_path)
+                    existing_path = self._index[case_path]
+                    LOGGER.warning('casefolded path ambiguity: "{}" vs "{}"! Checking if files identical...', existing_path, true_path)
+                    
+                    if not filecmp.cmp(existing_path, true_path):
+                        raise AmbiguousPathError(case_path)
                 else:
                     self._index[case_path] = true_path
         
